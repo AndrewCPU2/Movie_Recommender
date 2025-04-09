@@ -5,6 +5,29 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+# Function to set custom CSS for a dark/light theme toggle
+def set_theme(theme):
+    if theme == "Dark":
+        st.markdown(
+            """
+            <style>
+            .main {background-color: #333333; color: #ffffff;}
+            .sidebar .sidebar-content {background-color: #444444; color: #ffffff;}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <style>
+            .main {background-color: #ffffff; color: #000000;}
+            .sidebar .sidebar-content {background-color: #f0f0f0; color: #000000;}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
 # Load dataset
 file_path = "imdb_top_1000.csv"
 imdb_df = pd.read_csv(file_path)
@@ -46,8 +69,14 @@ genres_list = sorted(list(all_genres))
 # Extract unique release years from the CSV file
 years_list = sorted(imdb_df['Released_Year'].dropna().unique())
 
+# Additional filter: Director (if column exists)
+if 'Director' in imdb_df.columns:
+    directors_list = sorted(imdb_df['Director'].dropna().unique())
+else:
+    directors_list = []
+
 # Hybrid Recommendation Function
-def hybrid_recommendation(selected_genre, selected_year, df):
+def hybrid_recommendation(selected_genre, selected_year, selected_director, df):
     # Convert the selected genre to lowercase for matching
     genre = selected_genre.strip().lower()
     df['Genre'] = df['Genre'].str.strip().str.lower()
@@ -56,8 +85,15 @@ def hybrid_recommendation(selected_genre, selected_year, df):
     filtered_df = df[df['Genre'].str.contains(genre, case=False, na=False)]
     filtered_df = filtered_df[filtered_df['Released_Year'].astype(str).str.contains(str(selected_year))]
     
+    # Further filter by director if provided and available
+    if selected_director and 'Director' in df.columns and selected_director != "":
+        filtered_df = filtered_df[filtered_df['Director'].str.contains(selected_director, case=False, na=False)]
+    
     if filtered_df.empty:
-        st.write(f"No movies found with genre '{selected_genre}' and year '{selected_year}'. Showing top alternative picks.")
+        st.write(f"No movies found with genre '{selected_genre}', year '{selected_year}'", end="")
+        if selected_director:
+            st.write(f", and director '{selected_director}'", end="")
+        st.write(". Showing top alternative picks.")
         filtered_df = df.head(3)  # Provide top alternative recommendations
 
     # Compute weighted scores
@@ -77,69 +113,82 @@ def hybrid_recommendation(selected_genre, selected_year, df):
     top_movies = filtered_df.head(3)
     return top_movies[['Series_Title', 'Released_Year', 'IMDB_Rating', 'Weighted_Score']]
 
-# Streamlit App Layout
+# Sidebar for theme selection and filters
+st.sidebar.title("Filters & Settings")
+
+# Theme toggle
+theme_choice = st.sidebar.radio("Choose Theme", ("Light", "Dark"))
+set_theme(theme_choice)
+
+# Custom logo (make sure "logo.png" is present in your project folder)
+try:
+    st.sidebar.image("logo.png", use_column_width=True)
+except Exception as e:
+    st.sidebar.write("Logo not found.")
+
+# Filter options
+selected_genre = st.sidebar.selectbox("Select Genre:", genres_list)
+selected_year = st.sidebar.selectbox("Select Year:", years_list)
+
+selected_director = ""
+if directors_list:
+    selected_director = st.sidebar.selectbox("Select Director (Optional):", [""] + directors_list)
+
+st.sidebar.markdown("---")
+st.sidebar.write("Adjust the filters to get better movie recommendations!")
+
+# Main Page Layout
 st.title("Movie Recommender")
+st.write("Welcome! Get personalized movie recommendations based on your preferences.")
 
-# Initialize session state for recommendations & feedback scores
-if "recommendations" not in st.session_state:
-    st.session_state.recommendations = None
-
-if "feedback_scores" not in st.session_state:
-    st.session_state.feedback_scores = {}
-
-if "search_count" not in st.session_state:
-    st.session_state.search_count = len(user_feedback)
-
-# Genre and Year inputs using selectbox dropdowns
-selected_genre = st.selectbox("Select Genre:", genres_list)
-selected_year = st.selectbox("Select Year:", years_list)
-
-if st.button("Get Recommendations"):
-    if selected_genre and selected_year:
-        st.session_state.recommendations = hybrid_recommendation(selected_genre, selected_year, imdb_df)
+# Button to get recommendations with a spinner for progress indication
+if st.sidebar.button("Get Recommendations"):
+    with st.spinner("Fetching recommendations..."):
+        st.session_state.recommendations = hybrid_recommendation(selected_genre, selected_year, selected_director, imdb_df)
         # Initialize feedback scores in session state
         st.session_state.feedback_scores = {
             title: 0 for title in st.session_state.recommendations['Series_Title'].tolist()
         }
-    else:
-        st.write("Please select both a genre and a year to get recommendations.")
 
-# Display recommendations (if available)
-if st.session_state.recommendations is not None:
-    st.write("### Top Recommendations:")
+# Display recommendations and feedback sliders if available
+if "recommendations" in st.session_state and st.session_state.recommendations is not None:
+    st.subheader("Top Recommendations:")
     st.write(st.session_state.recommendations)
 
-    # Collect feedback with sliders
-    for movie in st.session_state.recommendations['Series_Title'].tolist():
-        st.session_state.feedback_scores[movie] = st.slider(
-            f"Rate '{movie}' (1-10, or 0 if not watched)",
-            0, 10, st.session_state.feedback_scores[movie]
-        )
+    st.write("### Rate the recommendations:")
+    # Use columns to display sliders side by side
+    cols = st.columns(len(st.session_state.recommendations))
+    for idx, movie in enumerate(st.session_state.recommendations['Series_Title'].tolist()):
+        with cols[idx]:
+            st.write(movie)
+            st.session_state.feedback_scores[movie] = st.slider(
+                "Rating (1-10, 0 if not watched)",
+                0, 10, st.session_state.feedback_scores[movie]
+            )
 
-    # Submit feedback button
+    # Submit Feedback button with progress indication
     if st.button("Submit Feedback"):
-        search_count = st.session_state.search_count
-        for movie_title, rating in st.session_state.feedback_scores.items():
-            if rating == 0:
-                not_watched_movies[movie_title] = search_count
-            else:
-                # Store user feedback with incremented search count
-                user_feedback[movie_title] = (rating, search_count + 1)
+        with st.spinner("Saving feedback..."):
+            search_count = st.session_state.search_count if "search_count" in st.session_state else len(user_feedback)
+            for movie_title, rating in st.session_state.feedback_scores.items():
+                if rating == 0:
+                    not_watched_movies[movie_title] = search_count
+                else:
+                    # Store user feedback with incremented search count
+                    user_feedback[movie_title] = (rating, search_count + 1)
 
-                # Adjust cooldown rules
-                if rating >= 7:
-                    cooldown_movies[movie_title] = search_count + 20  # Longer cooldown for liked movies
-                elif rating < 7:
-                    cooldown_movies[movie_title] = max(cooldown_movies.get(movie_title, 0), search_count + 5)  # Shorter cooldown
+                    # Adjust cooldown rules
+                    if rating >= 7:
+                        cooldown_movies[movie_title] = search_count + 20  # Longer cooldown for liked movies
+                    elif rating < 7:
+                        cooldown_movies[movie_title] = max(cooldown_movies.get(movie_title, 0), search_count + 5)  # Shorter cooldown
 
-        # Save feedback to JSON files
-        save_json(user_feedback, "user_feedback.json")
-        save_json(cooldown_movies, "cooldown_feedback.json")
-        save_json(not_watched_movies, "not_watched.json")
-        st.success("Feedback saved! Future recommendations will improve.")
+            # Save feedback to JSON files
+            save_json(user_feedback, "user_feedback.json")
+            save_json(cooldown_movies, "cooldown_feedback.json")
+            save_json(not_watched_movies, "not_watched.json")
+            st.success("Feedback saved! Thank you for your input.")
 
-        # Clear feedback sliders after submission
-        st.session_state.feedback_scores = {}
-
-        # Increment search count to ensure unique cooldown periods
-        st.session_state.search_count += 1  
+            # Clear feedback sliders after submission and update search count
+            st.session_state.feedback_scores = {}
+            st.session_state.search_count = search_count + 1 
