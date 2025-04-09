@@ -21,29 +21,6 @@ def save_json(data, file):
     with open(file, "w") as f:
         json.dump(data, f, indent=4)
 
-user_feedback = load_json("user_feedback.json")import streamlit as st
-import pandas as pd
-import json
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-
-# Load dataset
-file_path = "imdb_top_1000.csv"
-imdb_df = pd.read_csv(file_path)
-
-# Load existing feedback data
-def load_json(file):
-    try:
-        with open(file, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_json(data, file):
-    with open(file, "w") as f:
-        json.dump(data, f, indent=4)
-
 user_feedback = load_json("user_feedback.json")
 cooldown_movies = load_json("cooldown_feedback.json")
 not_watched_movies = load_json("not_watched.json")
@@ -165,4 +142,4 @@ if st.session_state.recommendations is not None:
         st.session_state.feedback_scores = {}
 
         # Increment search count to ensure unique cooldown periods
-        st.session_state.search_count += 1 
+        st.session_state.search_count += 1  
