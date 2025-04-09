@@ -158,12 +158,16 @@ if "recommendations" in st.session_state and st.session_state.recommendations is
     st.write("### Rate the recommendations:")
     # Use columns to display sliders side by side
     cols = st.columns(len(st.session_state.recommendations))
-    for idx, movie in enumerate(st.session_state.recommendations['Series_Title'].tolist()):
+    movie_list = st.session_state.recommendations['Series_Title'].tolist()
+    for idx, movie in enumerate(movie_list):
         with cols[idx]:
             st.write(movie)
+            # Provide a unique key for each slider widget
             st.session_state.feedback_scores[movie] = st.slider(
                 "Rating (1-10, 0 if not watched)",
-                0, 10, st.session_state.feedback_scores[movie]
+                0, 10,
+                st.session_state.feedback_scores[movie],
+                key=f"slider_{movie}_{idx}"
             )
 
     # Submit Feedback button with progress indication
@@ -189,6 +193,9 @@ if "recommendations" in st.session_state and st.session_state.recommendations is
             save_json(not_watched_movies, "not_watched.json")
             st.success("Feedback saved! Thank you for your input.")
 
+            # Clear feedback sliders after submission and update search count
+            st.session_state.feedback_scores = {}
+            st.session_state.search_count = search_count + 1
             # Clear feedback sliders after submission and update search count
             st.session_state.feedback_scores = {}
             st.session_state.search_count = search_count + 1 
