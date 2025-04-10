@@ -5,14 +5,20 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Function to set custom CSS for a dark/light theme toggle
+# Function to set custom CSS for dark/light theme toggle using data-testid attributes
 def set_theme(theme):
     if theme == "Dark":
         st.markdown(
             """
             <style>
-            .main, .block-container {background-color: #333333; color: #ffffff;}
-            .sidebar .sidebar-content {background-color: #444444; color: #ffffff;}
+            [data-testid="stSidebar"] {
+                background-color: #444444;
+                color: #ffffff;
+            }
+            [data-testid="stAppViewContainer"] {
+                background-color: #333333;
+                color: #ffffff;
+            }
             </style>
             """,
             unsafe_allow_html=True
@@ -21,8 +27,14 @@ def set_theme(theme):
         st.markdown(
             """
             <style>
-            .main, .block-container {background-color: #ffffff; color: #000000;}
-            .sidebar .sidebar-content {background-color: #f0f0f0; color: #000000;}
+            [data-testid="stSidebar"] {
+                background-color: #f0f0f0;
+                color: #000000;
+            }
+            [data-testid="stAppViewContainer"] {
+                background-color: #ffffff;
+                color: #000000;
+            }
             </style>
             """,
             unsafe_allow_html=True
@@ -57,17 +69,16 @@ vectorizer = TfidfVectorizer(stop_words='english')
 genre_matrix = vectorizer.fit_transform(imdb_df['Genre'])
 cosine_sim = cosine_similarity(genre_matrix)
 
-# Extract unique genres from the CSV file
+# Extract unique genres and add an "Any Genre" option
 all_genres = set()
 for genre_str in imdb_df['Genre']:
     for genre in genre_str.split(","):
         genre = genre.strip()
         if genre:
             all_genres.add(genre.capitalize())
-# Add an "Any Genre" option at the beginning
 genres_list = ["Any Genre"] + sorted(list(all_genres))
 
-# Extract unique release years from the CSV file and add an "Any Year" option
+# Extract unique release years and add an "Any Year" option
 years = imdb_df['Released_Year'].dropna().unique()
 years_list = ["Any Year"] + sorted(years.astype(str).tolist())
 
@@ -91,13 +102,16 @@ def hybrid_recommendation(selected_genre, selected_year, selected_director, df):
     if selected_year != "Any Year":
         filtered_df = filtered_df[filtered_df['Released_Year'].astype(str).str.contains(str(selected_year))]
     
-    # Further filter by director if provided and available
+    # Further filter by director if provided
     if selected_director and selected_director != "":
         filtered_df = filtered_df[filtered_df['Director'].str.contains(selected_director, case=False, na=False)]
     
-    # If no movies match the filters, ask the user to try another filter
+    # If no movies match, show a larger message and return an empty DataFrame
     if filtered_df.empty:
-        st.error("No movies found for the chosen filters. Would you like to try another filter?")
+        st.markdown(
+            "<h1 style='text-align: center; color: red;'>No movies found for the chosen filters. Please try a different filter.</h1>",
+            unsafe_allow_html=True
+        )
         return pd.DataFrame()
     
     # Compute weighted scores
@@ -108,7 +122,6 @@ def hybrid_recommendation(selected_genre, selected_year, selected_director, df):
     # Compute similarity scores
     movie_indices = filtered_df.index.tolist()
     avg_sim_scores = cosine_sim[movie_indices].mean(axis=0)
-    # Only consider the similarity scores for the filtered movies
     filtered_df['Similarity_Score'] = avg_sim_scores[movie_indices]
 
     # Sort by the weighted score
@@ -125,7 +138,7 @@ st.sidebar.title("Filters & Settings")
 theme_choice = st.sidebar.radio("Choose Theme", ("Light", "Dark"))
 set_theme(theme_choice)
 
-# Custom logo (make sure "logo.png" is present in your project folder)
+# Custom logo (ensure "logo.png" exists in your project folder)
 try:
     st.sidebar.image("logo.png", use_column_width=True)
 except Exception as e:
@@ -137,7 +150,6 @@ selected_year = st.sidebar.selectbox("Select Year:", years_list)
 
 selected_director = ""
 if directors_list:
-    # The empty string option indicates "Any Director"
     selected_director = st.sidebar.selectbox("Select Director (Optional):", ["Any Director"] + directors_list)
     if selected_director == "Any Director":
         selected_director = ""
@@ -163,7 +175,8 @@ if st.sidebar.button("Get Recommendations"):
 # Display recommendations and feedback sliders if available
 if "recommendations" in st.session_state and st.session_state.recommendations is not None:
     if st.session_state.recommendations.empty:
-        st.info("No recommendations to display. Please try adjusting your filters.")
+        # Nothing else is shown since the large no-match message has already been displayed.
+        st.stop()
     else:
         st.subheader("Top Recommendations:")
         st.write(st.session_state.recommendations)
@@ -175,7 +188,6 @@ if "recommendations" in st.session_state and st.session_state.recommendations is
         for idx, movie in enumerate(movie_list):
             with cols[idx]:
                 st.write(movie)
-                # Provide a unique key for each slider widget
                 st.session_state.feedback_scores[movie] = st.slider(
                     "Rating (1-10, 0 if not watched)",
                     0, 10,
@@ -191,20 +203,16 @@ if "recommendations" in st.session_state and st.session_state.recommendations is
                     if rating == 0:
                         not_watched_movies[movie_title] = search_count
                     else:
-                        # Store user feedback with incremented search count
                         user_feedback[movie_title] = (rating, search_count + 1)
-                        # Adjust cooldown rules
                         if rating >= 7:
                             cooldown_movies[movie_title] = search_count + 20  # Longer cooldown for liked movies
                         elif rating < 7:
-                            cooldown_movies[movie_title] = max(cooldown_movies.get(movie_title, 0), search_count + 5)  # Shorter cooldown
+                            cooldown_movies[movie_title] = max(cooldown_movies.get(movie_title, 0), search_count + 5)
 
-                # Save feedback to JSON files
                 save_json(user_feedback, "user_feedback.json")
                 save_json(cooldown_movies, "cooldown_feedback.json")
                 save_json(not_watched_movies, "not_watched.json")
                 st.success("Feedback saved! Thank you for your input.")
 
-                # Clear feedback sliders and update search count
                 st.session_state.feedback_scores = {}
                 st.session_state.search_count = search_count + 1
