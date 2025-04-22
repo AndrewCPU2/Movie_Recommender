@@ -11,6 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 @st.cache_data
 def load_csv(path):
     df = pd.read_csv(path)
+    # Fill missing values
     df['Genre'] = df['Genre'].fillna("")
     df['IMDB_Rating'] = df['IMDB_Rating'].fillna(df['IMDB_Rating'].mean())
     df['Meta_score'] = df['Meta_score'].fillna(df['Meta_score'].mean())
@@ -31,15 +32,28 @@ def build_similarity(df):
     sim = cosine_similarity(mat)
     return sim
 
-imdb_df = load_csv("imdb_top_1000.csv")
-cosine_sim = build_similarity(imdb_df)
+# Load data
+imdb_df      = load_csv("imdb_top_1000.csv")
+cosine_sim   = build_similarity(imdb_df)
+user_feedback     = load_json("user_feedback.json")
+cooldown_feedback = load_json("cooldown_feedback.json")
+not_watched       = load_json("not_watched.json")
+
+def save_all():
+    with open("user_feedback.json","w")     as f: json.dump(user_feedback, f,     indent=4)
+    with open("cooldown_feedback.json","w") as f: json.dump(cooldown_feedback, f, indent=4)
+    with open("not_watched.json","w")       as f: json.dump(not_watched, f,       indent=4)
 
 # ----------------------------------------
 # Theme CSS
 # ----------------------------------------
 def set_theme(theme: str):
-    bg, fg = ("#333333", "#ffffff") if theme=="Dark" else ("#ffffff", "#000000")
-    sidebar_bg, sidebar_fg = ("#444444","#ffffff") if theme=="Dark" else ("#f0f0f0","#000000")
+    if theme == "Dark":
+        sidebar_bg, sidebar_fg = "#444444", "#ffffff"
+        bg, fg               = "#333333", "#ffffff"
+    else:
+        sidebar_bg, sidebar_fg = "#f0f0f0", "#000000"
+        bg, fg               = "#ffffff", "#000000"
     st.markdown(f"""
         <style>
           [data-testid="stSidebar"] {{
@@ -54,30 +68,27 @@ def set_theme(theme: str):
     """, unsafe_allow_html=True)
 
 # ----------------------------------------
-# Feedback storage
-# ----------------------------------------
-user_feedback     = load_json("user_feedback.json")
-cooldown_feedback = load_json("cooldown_feedback.json")
-not_watched       = load_json("not_watched.json")
-
-def save_all():
-    with open("user_feedback.json","w")     as f: json.dump(user_feedback, f,     indent=4)
-    with open("cooldown_feedback.json","w") as f: json.dump(cooldown_feedback, f, indent=4)
-    with open("not_watched.json","w")       as f: json.dump(not_watched, f,       indent=4)
-
-# ----------------------------------------
 # Prepare filter options
 # ----------------------------------------
 # Genres
-all_genres = sorted({g.strip().capitalize()
-                     for row in imdb_df['Genre'] for g in row.split(",") if g.strip()})
+all_genres = sorted({
+    g.strip().capitalize()
+    for row in imdb_df['Genre']
+    for g in row.split(",")
+    if g.strip()
+})
 genres_list = ["Any Genre"] + all_genres
 
-# Years
-years_list = ["Any Year"] + sorted(imdb_df['Released_Year'].dropna().astype(int).astype(str).unique().tolist())
+# Years — safely coerce non-numeric entries
+year_nums = (
+    pd.to_numeric(imdb_df['Released_Year'], errors='coerce')
+      .dropna()
+      .astype(int)
+)
+years_list = ["Any Year"] + sorted(year_nums.astype(str).unique().tolist())
 
 # Directors
-directors = sorted(imdb_df['Director'].dropna().unique())
+directors = sorted(imdb_df.get('Director', pd.Series()).dropna().unique())
 directors_list = ["Any Director"] + directors if directors else []
 
 # ----------------------------------------
@@ -85,28 +96,35 @@ directors_list = ["Any Director"] + directors if directors else []
 # ----------------------------------------
 def hybrid_recommendation(genre, year, director, df, sim):
     df_filtered = df.copy()
-    if genre!="Any Genre":
+    # Filter by genre
+    if genre != "Any Genre":
         mask = df['Genre'].str.lower().str.contains(genre.lower(), na=False)
         df_filtered = df_filtered[mask]
-    if year!="Any Year":
-        df_filtered = df_filtered[df_filtered['Released_Year'].astype(str)==year]
-    if director!="Any Director":
-        df_filtered = df_filtered[df_filtered['Director'].str.contains(director, case=False, na=False)]
-
+    # Filter by year
+    if year != "Any Year":
+        df_filtered = df_filtered[
+            df_filtered['Released_Year'].astype(str) == year
+        ]
+    # Filter by director
+    if director and director != "Any Director":
+        df_filtered = df_filtered[
+            df_filtered['Director'].str.contains(director, case=False, na=False)
+        ]
+    # No matches
     if df_filtered.empty:
         st.error("No movies match those filters. Try something else.")
         return pd.DataFrame()
-
-    # Weighted score
+    # Compute weighted score
     df_filtered = df_filtered.assign(
         Normalized_Meta = df_filtered['Meta_score'] / 10,
-        Weighted_Score   = df_filtered['IMDB_Rating']*0.7 + (df_filtered['Meta_score']/10)*0.3
+        Weighted_Score   = df_filtered['IMDB_Rating']*0.7 +
+                           (df_filtered['Meta_score']/10)*0.3
     )
-    # Similarity (average across chosen subset)
+    # Compute similarity scores (average across subset)
     idxs = df_filtered.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     df_filtered['Similarity_Score'] = avg_sim
-
+    # Top 3
     recs = df_filtered.sort_values("Weighted_Score", ascending=False).head(3)
     return recs[["Series_Title","Released_Year","IMDB_Rating","Weighted_Score"]]
 
@@ -119,18 +137,27 @@ set_theme(theme)
 
 selected_genre    = st.sidebar.selectbox("Genre", genres_list)
 selected_year     = st.sidebar.selectbox("Year", years_list)
-selected_director = (st.sidebar.selectbox("Director", directors_list)
-                     if directors_list else "Any Director")
+if directors_list:
+    selected_director = st.sidebar.selectbox("Director", directors_list)
+else:
+    selected_director = "Any Director"
 
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_feedback)
 
 if st.sidebar.button("Get Recommendations"):
-    recs = hybrid_recommendation(selected_genre, selected_year, selected_director, imdb_df, cosine_sim)
+    recs = hybrid_recommendation(
+        selected_genre,
+        selected_year,
+        selected_director,
+        imdb_df,
+        cosine_sim
+    )
     st.session_state.recommendations = recs
     if not recs.empty:
-        # init feedback scores
-        st.session_state.feedback = {t: 0 for t in recs.Series_Title}
+        st.session_state.feedback = {
+            title: 0 for title in recs.Series_Title
+        }
 
 # ----------------------------------------
 # Main panel
@@ -146,25 +173,24 @@ if st.session_state.get("recommendations") is not None:
 
         st.subheader("Rate Them")
         cols = st.columns(len(recs))
-        for i,(_,row) in enumerate(recs.iterrows()):
+        for i, (_, row) in enumerate(recs.iterrows()):
             title = row.Series_Title
             with cols[i]:
                 st.write(title)
                 st.session_state.feedback[title] = st.slider(
-                    "Your rating",
-                    min_value=0, max_value=10,
-                    value=st.session_state.feedback[title],
+                    "Your rating", 0, 10,
+                    st.session_state.feedback.get(title, 0),
                     key=f"feed_{i}"
                 )
 
         if st.button("Submit Feedback"):
             cnt = st.session_state.search_count
-            for title,score in st.session_state.feedback.items():
-                if score==0:
+            for title, score in st.session_state.feedback.items():
+                if score == 0:
                     not_watched[title] = cnt
                 else:
-                    user_feedback[title] = (score, cnt+1)
-                    cooldown_feedback[title] = cnt + (20 if score>=7 else 5)
+                    user_feedback[title]     = (score, cnt+1)
+                    cooldown_feedback[title] = cnt + (20 if score >= 7 else 5)
             save_all()
             st.success("Thanks for your feedback!")
             st.session_state.search_count += 1
