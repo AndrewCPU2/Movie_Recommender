@@ -10,7 +10,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 @st.cache_data
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    # rename first column to Poster_URL
     first_col = df.columns[0]
     df = df.rename(columns={first_col: "Poster_URL"})
     df['Genre'] = df['Genre'].fillna("")
@@ -59,7 +58,6 @@ def hybrid_recommendation(
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
 
-    # include Poster_URL in the returned columns
     return (
         d.sort_values("Weighted_Score", ascending=False)
          .head(3)[[
@@ -123,8 +121,13 @@ if "recs" in st.session_state:
                 title = row.Series_Title
                 col = cols[i]
                 with col:
-                    # show the poster from CSV
-                    st.image(row.Poster_URL, caption=title, use_column_width=True)
+                    # smaller poster: width=200
+                    st.image(
+                        row.Poster_URL,
+                        caption=title,
+                        use_container_width=False,
+                        width=200
+                    )
                     st.session_state.feedback[title] = st.slider(
                         "Your rating", 0, 10,
                         st.session_state.feedback.get(title, 0),
@@ -148,9 +151,8 @@ if "recs" in st.session_state:
 
                 st.success("Thanks for your feedback! 🎉")
 
-                # fade background + ask to search again
-                with st.modal("search_again_modal"):
-                    st.write("**Would you like to search again?**")
+                # --- modal fallback snippet ---
+                def _render_search_again_buttons():
                     c1, c2 = st.columns(2)
                     if c1.button("Yes, new search"):
                         for k in ("recs", "feedback"):
@@ -158,3 +160,21 @@ if "recs" in st.session_state:
                         st.experimental_rerun()
                     if c2.button("No, exit"):
                         st.write("Enjoy your movies! 🍿")
+
+                if hasattr(st, "modal"):
+                    with st.modal("search_again_modal"):
+                        st.write("**Would you like to search again?**")
+                        _render_search_again_buttons()
+                else:
+                    st.markdown(
+                        """
+                        <style>
+                        [data-testid="stAppViewContainer"] {
+                            filter: brightness(40%);
+                        }
+                        </style>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.write("**Would you like to search again?**")
+                    _render_search_again_buttons()
