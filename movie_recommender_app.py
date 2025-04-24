@@ -44,7 +44,7 @@ def hybrid_recommendation(
     d = df.copy()
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
-    if year:  # only filter if user typed something
+    if year:  # only if user typed
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
@@ -74,14 +74,14 @@ def hybrid_recommendation(
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
 
-# load data & models
+# load
 imdb_df     = load_csv("imdb_top_1000.csv")
 user_fb     = load_json("user_feedback.json")
 cd_fb       = load_json("cooldown_feedback.json")
 not_watched = load_json("not_watched.json")
 vect, sim   = build_vectorizer_and_sim(imdb_df)
 
-# build filter options
+# filters
 all_genres = sorted({
     g.strip().capitalize()
     for row in imdb_df["Genre"] for g in row.split(",") if g
@@ -99,19 +99,21 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
         recs = hybrid_recommendation(imdb_df, sim, genre_sel, year_sel.strip(), director_sel)
         st.session_state.recs = recs
         if not recs.empty:
-            # reset feedback and any old prompt
             st.session_state.feedback = {t: 0 for t in recs.Series_Title}
             st.session_state.pop("show_prompt", None)
 
     if st.button("Start Over"):
-        # clear all previous state and rerun
         for key in ("recs", "feedback", "show_prompt"):
             st.session_state.pop(key, None)
-        st.experimental_rerun()
+        # rerun if possible, otherwise stop
+        if hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+        else:
+            st.stop()
 
 # ---- MAIN AREA ----
 
-# If we're showing the “search again” prompt, dim & handle buttons
+# search-again prompt
 if st.session_state.get("show_prompt"):
     st.markdown(
         """
@@ -128,12 +130,15 @@ if st.session_state.get("show_prompt"):
     if c1.button("🔍 New Search"):
         for key in ("recs", "feedback", "show_prompt"):
             st.session_state.pop(key, None)
-        st.experimental_rerun()
+        if hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+        else:
+            st.stop()
     if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
 
-# Otherwise, show recommendations + feedback form
+# recommendations + feedback form
 if "recs" in st.session_state:
     recs = st.session_state.recs
 
@@ -176,5 +181,4 @@ if "recs" in st.session_state:
                 with open("not_watched.json","w")       as f: json.dump(not_watched, f, indent=4)
 
                 st.success("Thanks for your feedback! 🎉")
-                # trigger prompt
                 st.session_state.show_prompt = True
