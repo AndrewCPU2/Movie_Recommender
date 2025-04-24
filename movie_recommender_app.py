@@ -17,10 +17,10 @@ def load_csv(path: str) -> pd.DataFrame:
     df['Meta_score'] = df['Meta_score'].fillna(df['Meta_score'].mean())
     return df
 
-@st.cache_data
 def load_json(path: str) -> Dict:
+    """Always read the file fresh so we pick up any writes."""
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
@@ -44,7 +44,7 @@ def hybrid_recommendation(
     d = df.copy()
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
-    if year:  # only if user typed
+    if year:  # only if user typed something
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
@@ -74,14 +74,14 @@ def hybrid_recommendation(
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
 
-# load
+# load data & models
 imdb_df     = load_csv("imdb_top_1000.csv")
 user_fb     = load_json("user_feedback.json")
 cd_fb       = load_json("cooldown_feedback.json")
 not_watched = load_json("not_watched.json")
 vect, sim   = build_vectorizer_and_sim(imdb_df)
 
-# filters
+# build filter options
 all_genres = sorted({
     g.strip().capitalize()
     for row in imdb_df["Genre"] for g in row.split(",") if g
@@ -96,7 +96,12 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     director_sel = st.selectbox("Director", ["Any Director"] + directors)
 
     if st.button("Get Recommendations"):
-        recs = hybrid_recommendation(imdb_df, sim, genre_sel, year_sel.strip(), director_sel)
+        recs = hybrid_recommendation(
+            imdb_df, sim,
+            genre_sel,
+            year_sel.strip(),
+            director_sel
+        )
         st.session_state.recs = recs
         if not recs.empty:
             st.session_state.feedback = {t: 0 for t in recs.Series_Title}
@@ -105,7 +110,7 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     if st.button("Start Over"):
         for key in ("recs", "feedback", "show_prompt"):
             st.session_state.pop(key, None)
-        # rerun if possible, otherwise stop
+        # try to rerun, otherwise stop
         if hasattr(st, "experimental_rerun"):
             st.experimental_rerun()
         else:
@@ -113,7 +118,7 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
 
 # ---- MAIN AREA ----
 
-# search-again prompt
+# show “search again?” prompt
 if st.session_state.get("show_prompt"):
     st.markdown(
         """
@@ -175,10 +180,13 @@ if "recs" in st.session_state:
                         user_fb[title] = (score, cnt + 1)
                         cd_fb[title]   = cnt + (20 if score >= 7 else 5)
 
-                # save feedback
-                with open("user_feedback.json","w")     as f: json.dump(user_fb,     f, indent=4)
-                with open("cooldown_feedback.json","w") as f: json.dump(cd_fb,       f, indent=4)
-                with open("not_watched.json","w")       as f: json.dump(not_watched, f, indent=4)
+                # write out the JSONs freshly to disk
+                with open("user_feedback.json",     "w", encoding="utf-8") as f:
+                    json.dump(user_fb,     f, indent=4)
+                with open("cooldown_feedback.json","w", encoding="utf-8") as f:
+                    json.dump(cd_fb,       f, indent=4)
+                with open("not_watched.json",      "w", encoding="utf-8") as f:
+                    json.dump(not_watched, f, indent=4)
 
                 st.success("Thanks for your feedback! 🎉")
                 st.session_state.show_prompt = True
