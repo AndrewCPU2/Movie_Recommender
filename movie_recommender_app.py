@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
-from typing import List, Dict
+from typing import Dict, Tuple
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -10,6 +10,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 @st.cache_data
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
+    # rename first column to Poster_URL
+    first_col = df.columns[0]
+    df = df.rename(columns={first_col: "Poster_URL"})
     df['Genre'] = df['Genre'].fillna("")
     df['IMDB_Rating'] = df['IMDB_Rating'].fillna(df['IMDB_Rating'].mean())
     df['Meta_score'] = df['Meta_score'].fillna(df['Meta_score'].mean())
@@ -24,7 +27,7 @@ def load_json(path: str) -> Dict:
         return {}
 
 @st.cache_resource
-def build_vectorizer_and_sim(df: pd.DataFrame) -> (TfidfVectorizer, pd.DataFrame):
+def build_vectorizer_and_sim(df: pd.DataFrame) -> Tuple[TfidfVectorizer, pd.DataFrame]:
     vect = TfidfVectorizer(stop_words="english")
     mat = vect.fit_transform(df["Genre"])
     sim = cosine_similarity(mat)
@@ -50,40 +53,52 @@ def hybrid_recommendation(
         return pd.DataFrame()
 
     d = d.assign(
-        Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
+        Weighted_Score=d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
     )
     idxs = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
-    return d.sort_values("Weighted_Score", ascending=False).head(3)[
-        ["Series_Title", "Released_Year", "IMDB_Rating", "Weighted_Score"]
-    ]
 
-# ---- UI ----
+    # include Poster_URL in the returned columns
+    return (
+        d.sort_values("Weighted_Score", ascending=False)
+         .head(3)[[
+             "Poster_URL",
+             "Series_Title",
+             "Released_Year",
+             "IMDB_Rating",
+             "Weighted_Score"
+         ]]
+    )
+
+# ---- UI SETUP ----
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
 
-# Load
-imdb_df      = load_csv("imdb_top_1000.csv")
-user_fb      = load_json("user_feedback.json")
-cd_fb        = load_json("cooldown_feedback.json")
-not_watched  = load_json("not_watched.json")
-vect, sim    = build_vectorizer_and_sim(imdb_df)
+# load data & models
+imdb_df     = load_csv("imdb_top_1000.csv")
+user_fb     = load_json("user_feedback.json")
+cd_fb       = load_json("cooldown_feedback.json")
+not_watched = load_json("not_watched.json")
+vect, sim   = build_vectorizer_and_sim(imdb_df)
 
-# Prepare filter lists
-all_genres   = sorted({g.strip().capitalize() for row in imdb_df["Genre"] for g in row.split(",") if g})
-years        = (
+# filter options
+all_genres = sorted({g.strip().capitalize()
+                     for row in imdb_df["Genre"]
+                     for g in row.split(",") if g})
+years = sorted(
     pd.to_numeric(imdb_df["Released_Year"], errors="coerce")
       .dropna().astype(int).astype(str)
       .unique().tolist()
 )
-directors    = sorted(imdb_df.get("Director", pd.Series()).dropna().unique())
+directors = sorted(imdb_df.get("Director", pd.Series()).dropna().unique())
 
-# Sidebar
+# ---- SIDEBAR ----
+
 with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     genre_sel    = st.selectbox("Genre", ["Any Genre"] + all_genres)
-    year_sel     = st.selectbox("Year", ["Any Year"] + sorted(years))
+    year_sel     = st.selectbox("Year", ["Any Year"] + years)
     director_sel = st.selectbox("Director", ["Any Director"] + directors)
 
     if st.button("Get Recommendations"):
@@ -92,27 +107,30 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
         if not recs.empty:
             st.session_state.feedback = {t: 0 for t in recs.Series_Title}
 
-# Main area
+# ---- MAIN AREA ----
+
 if "recs" in st.session_state:
     recs = st.session_state.recs
+
     if recs.empty:
         st.warning("No movies match those filters. Please try again.")
     else:
         st.subheader("Top 3 Recommendations")
-        st.dataframe(recs, use_container_width=True)
+        cols = st.columns(len(recs))
 
-        # Rating form
         with st.form("feedback_form"):
-            cols = st.columns(len(recs))
             for i, (_, row) in enumerate(recs.iterrows()):
                 title = row.Series_Title
-                with cols[i]:
-                    st.write(f"**{title}**")
+                col = cols[i]
+                with col:
+                    # show the poster from CSV
+                    st.image(row.Poster_URL, caption=title, use_column_width=True)
                     st.session_state.feedback[title] = st.slider(
-                        "Rating", 0, 10,
+                        "Your rating", 0, 10,
                         st.session_state.feedback.get(title, 0),
                         key=f"slider_{i}"
                     )
+
             submitted = st.form_submit_button("Submit Feedback")
             if submitted:
                 cnt = st.session_state.get("search_count", len(user_fb))
@@ -120,11 +138,23 @@ if "recs" in st.session_state:
                     if score == 0:
                         not_watched[title] = cnt
                     else:
-                        user_fb[title] = (score, cnt+1)
-                        cd_fb[title] = cnt + (20 if score >= 7 else 5)
-                # save
+                        user_fb[title] = (score, cnt + 1)
+                        cd_fb[title]   = cnt + (20 if score >= 7 else 5)
+
+                # persist feedback
                 with open("user_feedback.json","w")     as f: json.dump(user_fb,     f, indent=4)
                 with open("cooldown_feedback.json","w") as f: json.dump(cd_fb,       f, indent=4)
                 with open("not_watched.json","w")       as f: json.dump(not_watched, f, indent=4)
+
                 st.success("Thanks for your feedback! 🎉")
-                st.session_state.search_count = cnt + 1
+
+                # fade background + ask to search again
+                with st.modal("search_again_modal"):
+                    st.write("**Would you like to search again?**")
+                    c1, c2 = st.columns(2)
+                    if c1.button("Yes, new search"):
+                        for k in ("recs", "feedback"):
+                            st.session_state.pop(k, None)
+                        st.experimental_rerun()
+                    if c2.button("No, exit"):
+                        st.write("Enjoy your movies! 🍿")
