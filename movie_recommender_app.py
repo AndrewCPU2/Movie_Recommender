@@ -44,7 +44,7 @@ def hybrid_recommendation(
     d = df.copy()
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
-    if year != "Any Year":
+    if year:  # only filter if user typed something
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
@@ -52,7 +52,7 @@ def hybrid_recommendation(
         return pd.DataFrame()
 
     d = d.assign(
-        Weighted_Score=d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
+        Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
     )
     idxs = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
@@ -81,38 +81,38 @@ cd_fb       = load_json("cooldown_feedback.json")
 not_watched = load_json("not_watched.json")
 vect, sim   = build_vectorizer_and_sim(imdb_df)
 
-# filter options
-all_genres = sorted({g.strip().capitalize()
-                     for row in imdb_df["Genre"]
-                     for g in row.split(",") if g})
-years = sorted(
-    pd.to_numeric(imdb_df["Released_Year"], errors="coerce")
-      .dropna().astype(int).astype(str)
-      .unique().tolist()
-)
+# build filter options
+all_genres = sorted({
+    g.strip().capitalize()
+    for row in imdb_df["Genre"] for g in row.split(",") if g
+})
 directors = sorted(imdb_df.get("Director", pd.Series()).dropna().unique())
 
 # ---- SIDEBAR ----
 
 with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     genre_sel    = st.selectbox("Genre", ["Any Genre"] + all_genres)
-    year_sel     = st.selectbox("Year", ["Any Year"] + years)
+    year_sel     = st.text_input("Year (leave blank for any)", value="")
     director_sel = st.selectbox("Director", ["Any Director"] + directors)
 
     if st.button("Get Recommendations"):
-        recs = hybrid_recommendation(imdb_df, sim, genre_sel, year_sel, director_sel)
+        recs = hybrid_recommendation(imdb_df, sim, genre_sel, year_sel.strip(), director_sel)
         st.session_state.recs = recs
         if not recs.empty:
-            # reset feedback for new recs
+            # reset feedback and any old prompt
             st.session_state.feedback = {t: 0 for t in recs.Series_Title}
-            # clear any old prompt
             st.session_state.pop("show_prompt", None)
+
+    if st.button("Start Over"):
+        # clear all previous state and rerun
+        for key in ("recs", "feedback", "show_prompt"):
+            st.session_state.pop(key, None)
+        st.experimental_rerun()
 
 # ---- MAIN AREA ----
 
-# If we're asking "search again", show that prompt and stop
+# If we're showing the “search again” prompt, dim & handle buttons
 if st.session_state.get("show_prompt"):
-    # dim entire app
     st.markdown(
         """
         <style>
@@ -125,15 +125,15 @@ if st.session_state.get("show_prompt"):
     )
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
-    if c1.button("🔍 New Search", key="new_search"):
-        for k in ("recs", "feedback", "show_prompt"):
-            st.session_state.pop(k, None)
+    if c1.button("🔍 New Search"):
+        for key in ("recs", "feedback", "show_prompt"):
+            st.session_state.pop(key, None)
         st.experimental_rerun()
-    if c2.button("⏹️ Exit", key="exit"):
+    if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
 
-# Otherwise, if we have recs, show them
+# Otherwise, show recommendations + feedback form
 if "recs" in st.session_state:
     recs = st.session_state.recs
 
@@ -170,11 +170,11 @@ if "recs" in st.session_state:
                         user_fb[title] = (score, cnt + 1)
                         cd_fb[title]   = cnt + (20 if score >= 7 else 5)
 
-                # persist feedback
+                # save feedback
                 with open("user_feedback.json","w")     as f: json.dump(user_fb,     f, indent=4)
                 with open("cooldown_feedback.json","w") as f: json.dump(cd_fb,       f, indent=4)
                 with open("not_watched.json","w")       as f: json.dump(not_watched, f, indent=4)
 
                 st.success("Thanks for your feedback! 🎉")
-                # trigger the “search again” prompt
+                # trigger prompt
                 st.session_state.show_prompt = True
