@@ -103,10 +103,37 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
         recs = hybrid_recommendation(imdb_df, sim, genre_sel, year_sel, director_sel)
         st.session_state.recs = recs
         if not recs.empty:
+            # reset feedback for new recs
             st.session_state.feedback = {t: 0 for t in recs.Series_Title}
+            # clear any old prompt
+            st.session_state.pop("show_prompt", None)
 
 # ---- MAIN AREA ----
 
+# If we're asking "search again", show that prompt and stop
+if st.session_state.get("show_prompt"):
+    # dim entire app
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] {
+            filter: brightness(30%);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("## Would you like to search again?")
+    c1, c2 = st.columns(2)
+    if c1.button("🔍 New Search", key="new_search"):
+        for k in ("recs", "feedback", "show_prompt"):
+            st.session_state.pop(k, None)
+        st.experimental_rerun()
+    if c2.button("⏹️ Exit", key="exit"):
+        st.write("Enjoy your movies! 🍿")
+    st.stop()
+
+# Otherwise, if we have recs, show them
 if "recs" in st.session_state:
     recs = st.session_state.recs
 
@@ -121,7 +148,6 @@ if "recs" in st.session_state:
                 title = row.Series_Title
                 col = cols[i]
                 with col:
-                    # smaller poster: width=200
                     st.image(
                         row.Poster_URL,
                         caption=title,
@@ -150,31 +176,5 @@ if "recs" in st.session_state:
                 with open("not_watched.json","w")       as f: json.dump(not_watched, f, indent=4)
 
                 st.success("Thanks for your feedback! 🎉")
-
-                # --- modal fallback snippet ---
-                def _render_search_again_buttons():
-                    c1, c2 = st.columns(2)
-                    if c1.button("Yes, new search"):
-                        for k in ("recs", "feedback"):
-                            st.session_state.pop(k, None)
-                        st.experimental_rerun()
-                    if c2.button("No, exit"):
-                        st.write("Enjoy your movies! 🍿")
-
-                if hasattr(st, "modal"):
-                    with st.modal("search_again_modal"):
-                        st.write("**Would you like to search again?**")
-                        _render_search_again_buttons()
-                else:
-                    st.markdown(
-                        """
-                        <style>
-                        [data-testid="stAppViewContainer"] {
-                            filter: brightness(40%);
-                        }
-                        </style>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    st.write("**Would you like to search again?**")
-                    _render_search_again_buttons()
+                # trigger the “search again” prompt
+                st.session_state.show_prompt = True
