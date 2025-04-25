@@ -196,6 +196,8 @@ if "recs" in st.session_state:
                         use_container_width=False,
                         width=200
                     )
+                    # explain zero
+                    st.caption("0 = Did not watch yet")
                     st.session_state.feedback[title] = st.radio(
                         "Your rating:",
                         options=list(range(0, 11)),
