@@ -31,6 +31,18 @@ def build_vectorizer_and_sim(df: pd.DataFrame) -> Tuple[TfidfVectorizer, pd.Data
     sim = cosine_similarity(mat)
     return vect, sim
 
+# ---- LOAD DATA & FEEDBACK TRACKERS ----
+
+imdb_df     = load_csv("imdb_top_1000.csv")
+user_fb     = load_json("user_feedback.json")
+cd_fb       = load_json("cooldown_feedback.json")
+not_watched = load_json("not_watched.json")
+vect, sim   = build_vectorizer_and_sim(imdb_df)
+
+# initialize search count
+if "search_count" not in st.session_state:
+    st.session_state.search_count = len(user_fb)
+
 # ---- RECOMMENDER LOGIC ----
 
 def hybrid_recommendation(
@@ -41,44 +53,53 @@ def hybrid_recommendation(
     director: str
 ) -> pd.DataFrame:
     d = df.copy()
+
+    # basic filters
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
     if year:
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
+
+    # exclude skipped movies
+    if not_watched:
+        d = d[~d["Series_Title"].isin(not_watched.keys())]
+
+    # exclude movies still in cooldown
+    current = st.session_state.search_count
+    def still_in_cooldown(title: str) -> bool:
+        expiry = cd_fb.get(title)
+        return expiry is not None and expiry > current
+
+    d = d[~d["Series_Title"].apply(still_in_cooldown)]
+
     if d.empty:
         return pd.DataFrame()
 
-    # base weighted score
+    # compute base weighted score
     d = d.assign(
         Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
     )
 
-    # adjust by user feedback
+    # adjust by past feedback
     def adjust_score(row):
         title = row["Series_Title"]
         base = row["Weighted_Score"]
         fb = user_fb.get(title)
         if fb:
             rating, _ = fb
-            base += (rating - 5) * 0.1  # feedback multiplier
+            base += (rating - 5) * 0.1
         return base
 
     d["Weighted_Score"] = d.apply(adjust_score, axis=1)
 
-    # optionally filter out hated movies
-    hated = [t for t, (r, _) in user_fb.items() if r <= 2]
-    if hated:
-        d = d[~d["Series_Title"].isin(hated)]
-        if d.empty:
-            return pd.DataFrame()
-
-    # similarity score
+    # similarity scores
     idxs = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
 
+    # return top 3
     return (
         d.sort_values(["Weighted_Score", "Similarity_Score"], ascending=False)
          .head(3)[[
@@ -94,17 +115,6 @@ def hybrid_recommendation(
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
-
-# load data & models
-imdb_df     = load_csv("imdb_top_1000.csv")
-user_fb     = load_json("user_feedback.json")
-cd_fb       = load_json("cooldown_feedback.json")
-not_watched = load_json("not_watched.json")
-vect, sim   = build_vectorizer_and_sim(imdb_df)
-
-# initialize search_count if missing\if not in session_state
-if "search_count" not in st.session_state:
-    st.session_state.search_count = len(user_fb)
 
 # build filter options
 all_genres = sorted({
@@ -142,7 +152,6 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
 
 # ---- MAIN AREA ----
 
-# show “search again?” prompt
 if st.session_state.get("show_prompt"):
     st.markdown(
         """
@@ -167,7 +176,6 @@ if st.session_state.get("show_prompt"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
 
-# recommendations + feedback form
 if "recs" in st.session_state:
     recs = st.session_state.recs
 
@@ -204,16 +212,13 @@ if "recs" in st.session_state:
                         user_fb[title] = (score, cnt + 1)
                         cd_fb[title]   = cnt + (20 if score >= 7 else 5)
 
-                # write out the JSONs freshly to disk
-                with open("user_feedback.json",     "w", encoding="utf-8") as f:
-                    json.dump(user_fb,     f, indent=4)
-                with open("cooldown_feedback.json","w", encoding="utf-8") as f:
-                    json.dump(cd_fb,       f, indent=4)
-                with open("not_watched.json",      "w", encoding="utf-8") as f:
+                with open("user_feedback.json", "w", encoding="utf-8") as f:
+                    json.dump(user_fb, f, indent=4)
+                with open("cooldown_feedback.json", "w", encoding="utf-8") as f:
+                    json.dump(cd_fb, f, indent=4)
+                with open("not_watched.json", "w", encoding="utf-8") as f:
                     json.dump(not_watched, f, indent=4)
 
-                # increment search count for next turn
                 st.session_state.search_count = cnt + 1
-
                 st.success("Thanks for your feedback! 🎉")
                 st.session_state.show_prompt = True
