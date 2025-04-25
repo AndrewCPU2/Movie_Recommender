@@ -190,13 +190,12 @@ if "recs" in st.session_state:
                 title = row.Series_Title
                 col = cols[i]
                 with col:
-                    # Display at full column width for better clarity
                     st.image(
                         row.Poster_URL,
                         caption=title,
-                        use_column_width=True
+                        use_container_width=False,
+                        width=200
                     )
-                    # clickable fixed rating options instead of slider
                     st.session_state.feedback[title] = st.radio(
                         "Your rating:",
                         options=list(range(0, 11)),
