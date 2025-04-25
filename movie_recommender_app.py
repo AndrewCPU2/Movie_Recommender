@@ -18,7 +18,6 @@ def load_csv(path: str) -> pd.DataFrame:
     return df
 
 def load_json(path: str) -> Dict:
-    """Always read the file fresh so we pick up any writes."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -44,22 +43,44 @@ def hybrid_recommendation(
     d = df.copy()
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
-    if year:  # only if user typed something
+    if year:
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
     if d.empty:
         return pd.DataFrame()
 
+    # base weighted score
     d = d.assign(
         Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
     )
+
+    # adjust by user feedback
+    def adjust_score(row):
+        title = row["Series_Title"]
+        base = row["Weighted_Score"]
+        fb = user_fb.get(title)
+        if fb:
+            rating, _ = fb
+            base += (rating - 5) * 0.1  # feedback multiplier
+        return base
+
+    d["Weighted_Score"] = d.apply(adjust_score, axis=1)
+
+    # optionally filter out hated movies
+    hated = [t for t, (r, _) in user_fb.items() if r <= 2]
+    if hated:
+        d = d[~d["Series_Title"].isin(hated)]
+        if d.empty:
+            return pd.DataFrame()
+
+    # similarity score
     idxs = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
 
     return (
-        d.sort_values("Weighted_Score", ascending=False)
+        d.sort_values(["Weighted_Score", "Similarity_Score"], ascending=False)
          .head(3)[[
              "Poster_URL",
              "Series_Title",
@@ -80,6 +101,10 @@ user_fb     = load_json("user_feedback.json")
 cd_fb       = load_json("cooldown_feedback.json")
 not_watched = load_json("not_watched.json")
 vect, sim   = build_vectorizer_and_sim(imdb_df)
+
+# initialize search_count if missing\if not in session_state
+if "search_count" not in st.session_state:
+    st.session_state.search_count = len(user_fb)
 
 # build filter options
 all_genres = sorted({
@@ -110,7 +135,6 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     if st.button("Start Over"):
         for key in ("recs", "feedback", "show_prompt"):
             st.session_state.pop(key, None)
-        # try to rerun, otherwise stop
         if hasattr(st, "experimental_rerun"):
             st.experimental_rerun()
         else:
@@ -172,7 +196,7 @@ if "recs" in st.session_state:
 
             submitted = st.form_submit_button("Submit Feedback")
             if submitted:
-                cnt = st.session_state.get("search_count", len(user_fb))
+                cnt = st.session_state.search_count
                 for title, score in st.session_state.feedback.items():
                     if score == 0:
                         not_watched[title] = cnt
@@ -187,6 +211,9 @@ if "recs" in st.session_state:
                     json.dump(cd_fb,       f, indent=4)
                 with open("not_watched.json",      "w", encoding="utf-8") as f:
                     json.dump(not_watched, f, indent=4)
+
+                # increment search count for next turn
+                st.session_state.search_count = cnt + 1
 
                 st.success("Thanks for your feedback! 🎉")
                 st.session_state.show_prompt = True
