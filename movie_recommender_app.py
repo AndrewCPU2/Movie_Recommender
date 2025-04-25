@@ -190,16 +190,18 @@ if "recs" in st.session_state:
                 title = row.Series_Title
                 col = cols[i]
                 with col:
+                    # Display at full column width for better clarity
                     st.image(
                         row.Poster_URL,
                         caption=title,
-                        use_container_width=False,
-                        width=200
+                        use_column_width=True
                     )
-                    st.session_state.feedback[title] = st.slider(
-                        "Your rating", 0, 10,
-                        st.session_state.feedback.get(title, 0),
-                        key=f"slider_{i}"
+                    # clickable fixed rating options instead of slider
+                    st.session_state.feedback[title] = st.radio(
+                        "Your rating:",
+                        options=list(range(0, 11)),
+                        index=st.session_state.feedback.get(title, 0),
+                        key=f"rating_{i}"
                     )
 
             submitted = st.form_submit_button("Submit Feedback")
