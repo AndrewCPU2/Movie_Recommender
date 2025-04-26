@@ -71,7 +71,6 @@ def hybrid_recommendation(
     def still_in_cooldown(title: str) -> bool:
         expiry = cd_fb.get(title)
         return expiry is not None and expiry > current
-
     d = d[~d["Series_Title"].apply(still_in_cooldown)]
 
     if d.empty:
@@ -91,7 +90,6 @@ def hybrid_recommendation(
             rating, _ = fb
             base += (rating - 5) * 0.1
         return base
-
     d["Weighted_Score"] = d.apply(adjust_score, axis=1)
 
     # similarity scores
@@ -178,50 +176,12 @@ if st.session_state.get("show_prompt"):
 
 if "recs" in st.session_state:
     recs = st.session_state.recs
-
     if recs.empty:
         st.warning("No movies match those filters. Please try again.")
     else:
         st.subheader("Top 3 Recommendations")
         cols = st.columns(len(recs))
 
-        with st.form("feedback_form"):
-            for i, (_, row) in enumerate(recs.iterrows()):
-                title = row.Series_Title
-                col = cols[i]
-                with col:
-                    st.image(
-                        row.Poster_URL,
-                        caption=title,
-                        use_container_width=False,
-                        width=200
-                    )
-                    # explain zero
-                    st.caption("0 = Did not watch yet")
-                    st.session_state.feedback[title] = st.radio(
-                        "Your rating:",
-                        options=list(range(0, 11)),
-                        index=st.session_state.feedback.get(title, 0),
-                        key=f"rating_{i}"
-                    )
+        # descriptive dropdown labels
+        rating_labels = [
 
-            submitted = st.form_submit_button("Submit Feedback")
-            if submitted:
-                cnt = st.session_state.search_count
-                for title, score in st.session_state.feedback.items():
-                    if score == 0:
-                        not_watched[title] = cnt
-                    else:
-                        user_fb[title] = (score, cnt + 1)
-                        cd_fb[title]   = cnt + (20 if score >= 7 else 5)
-
-                with open("user_feedback.json", "w", encoding="utf-8") as f:
-                    json.dump(user_fb, f, indent=4)
-                with open("cooldown_feedback.json", "w", encoding="utf-8") as f:
-                    json.dump(cd_fb, f, indent=4)
-                with open("not_watched.json", "w", encoding="utf-8") as f:
-                    json.dump(not_watched, f, indent=4)
-
-                st.session_state.search_count = cnt + 1
-                st.success("Thanks for your feedback! 🎉")
-                st.session_state.show_prompt = True
