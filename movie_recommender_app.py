@@ -182,6 +182,58 @@ if "recs" in st.session_state:
         st.subheader("Top 3 Recommendations")
         cols = st.columns(len(recs))
 
-        # descriptive dropdown labels
         rating_labels = [
+            "0 = Not seen yet",
+            "1 = Bad",
+            "2 = Poor",
+            "3 = Fair",
+            "4 = Okay",
+            "5 = Average",
+            "6 = Good",
+            "7 = Very Good",
+            "8 = Great",
+            "9 = Excellent",
+            "10 = Masterpiece",
+        ]
 
+        with st.form("feedback_form"):
+            for i, (_, row) in enumerate(recs.iterrows()):
+                title = row.Series_Title
+                col = cols[i]
+                with col:
+                    st.image(
+                        row.Poster_URL,
+                        caption=title,
+                        use_container_width=False,
+                        width=200
+                    )
+                    st.caption("0 = Not seen yet")
+                    choice = st.selectbox(
+                        "Your rating:",
+                        options=rating_labels,
+                        index=st.session_state.feedback.get(title, 0),
+                        key=f"rating_{i}"
+                    )
+                    score = int(choice.split(" = ")[0])
+                    st.session_state.feedback[title] = score
+
+            submitted = st.form_submit_button("Submit Feedback")
+            if submitted:
+                cnt = st.session_state.search_count
+                for title, score in st.session_state.feedback.items():
+                    if score == 0:
+                        not_watched[title] = cnt
+                    else:
+                        user_fb[title] = (score, cnt + 1)
+                        cd_fb[title]   = cnt + (20 if score >= 7 else 5)
+
+                with open("user_feedback.json", "w", encoding="utf-8") as f:
+                    json.dump(user_fb, f, indent=4)
+                with open("cooldown_feedback.json", "w", encoding="utf-8") as f:
+                    json.dump(cd_fb, f, indent=4)
+                with open("not_watched.json", "w", encoding="utf-8") as f:
+                    json.dump(not_watched, f, indent=4)
+
+                st.session_state.search_count = cnt + 1
+                st.success("Thanks for your feedback! 🎉")
+                st.session_state.show_prompt = True
