@@ -1,20 +1,21 @@
+import os
+import json
 import streamlit as st
 import pandas as pd
-import json
 from typing import Dict, Tuple
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# ---- DATA LOADING & CACHING ----
+# ---- I/O HELPERS ----
 
 @st.cache_data
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     first_col = df.columns[0]
     df = df.rename(columns={first_col: "Poster_URL"})
-    df['Genre'] = df['Genre'].fillna("")
+    df['Genre']       = df['Genre'].fillna("")
     df['IMDB_Rating'] = df['IMDB_Rating'].fillna(df['IMDB_Rating'].mean())
-    df['Meta_score'] = df['Meta_score'].fillna(df['Meta_score'].mean())
+    df['Meta_score']  = df['Meta_score'].fillna(df['Meta_score'].mean())
     return df
 
 def load_json(path: str) -> Dict:
@@ -24,14 +25,27 @@ def load_json(path: str) -> Dict:
     except FileNotFoundError:
         return {}
 
+def save_recs(df: pd.DataFrame, path: str = "recommendations.json") -> None:
+    records = df.to_dict(orient="records")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
+
+def load_recs(path: str = "recommendations.json") -> pd.DataFrame:
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        if records:
+            return pd.DataFrame.from_records(records)
+    return pd.DataFrame()
+
 @st.cache_resource
 def build_vectorizer_and_sim(df: pd.DataFrame) -> Tuple[TfidfVectorizer, pd.DataFrame]:
     vect = TfidfVectorizer(stop_words="english")
-    mat = vect.fit_transform(df["Genre"])
-    sim = cosine_similarity(mat)
+    mat  = vect.fit_transform(df["Genre"])
+    sim  = cosine_similarity(mat)
     return vect, sim
 
-# ---- LOAD DATA & FEEDBACK TRACKERS ----
+# ---- LOAD DATA & FEEDBACK ----
 
 imdb_df     = load_csv("imdb_top_1000.csv")
 user_fb     = load_json("user_feedback.json")
@@ -39,11 +53,21 @@ cd_fb       = load_json("cooldown_feedback.json")
 not_watched = load_json("not_watched.json")
 vect, sim   = build_vectorizer_and_sim(imdb_df)
 
+# load last‐saved recs into session_state (if any)
+if "recs" not in st.session_state:
+    saved = load_recs()
+    if not saved.empty:
+        st.session_state.recs     = saved
+        # initialize feedback trackers for loaded recs
+        st.session_state.feedback = {
+            row["Series_Title"]: 0 for _, row in saved.iterrows()
+        }
+
 # initialize search count
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_fb)
 
-# ---- RECOMMENDER LOGIC ----
+# ---- RECOMMENDER FUNCTION ----
 
 def hybrid_recommendation(
     df: pd.DataFrame,
@@ -53,76 +77,56 @@ def hybrid_recommendation(
     director: str
 ) -> pd.DataFrame:
     d = df.copy()
-
-    # basic filters
     if genre != "Any Genre":
         d = d[d["Genre"].str.contains(genre, case=False, na=False)]
     if year:
         d = d[d["Released_Year"].astype(str) == year]
     if director not in ("", "Any Director"):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
-
-    # exclude skipped movies
-    if not_watched:
-        d = d[~d["Series_Title"].isin(not_watched.keys())]
-
-    # exclude movies still in cooldown
+    # exclude skipped and cooldown
     current = st.session_state.search_count
-    def still_in_cooldown(title: str) -> bool:
-        expiry = cd_fb.get(title)
-        return expiry is not None and expiry > current
-    d = d[~d["Series_Title"].apply(still_in_cooldown)]
-
+    d = d[~d["Series_Title"].isin(not_watched.keys())]
+    def in_cd(t): 
+        exp = cd_fb.get(t)
+        return exp is not None and exp > current
+    d = d[~d["Series_Title"].apply(in_cd)]
     if d.empty:
         return pd.DataFrame()
-
-    # compute base weighted score
+    # base weighted score
     d = d.assign(
-        Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
+        Weighted_Score = d["IMDB_Rating"] * 0.7 + (d["Meta_score"]/10) * 0.3
     )
-
     # adjust by past feedback
-    def adjust_score(row):
-        title = row["Series_Title"]
-        base = row["Weighted_Score"]
+    def adjust(r):
+        title = r["Series_Title"]
         fb = user_fb.get(title)
+        base = r["Weighted_Score"]
         if fb:
             rating, _ = fb
-            base += (rating - 5) * 0.1
+            base += (rating - 5)*0.1
         return base
-    d["Weighted_Score"] = d.apply(adjust_score, axis=1)
-
-    # similarity scores
-    idxs = d.index.tolist()
+    d["Weighted_Score"] = d.apply(adjust, axis=1)
+    # similarity
+    idxs   = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
-
-    # return top 3
+    # top 3
     return (
-        d.sort_values(["Weighted_Score", "Similarity_Score"], ascending=False)
-         .head(3)[[
-             "Poster_URL",
-             "Series_Title",
-             "Released_Year",
-             "IMDB_Rating",
-             "Weighted_Score"
-         ]]
+        d.sort_values(["Weighted_Score","Similarity_Score"], ascending=False)
+         .head(3)[["Poster_URL","Series_Title","Released_Year","IMDB_Rating","Weighted_Score"]]
     )
 
-# ---- UI SETUP ----
+# ---- UI ----
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
 
-# build filter options
-all_genres = sorted({
-    g.strip().capitalize()
-    for row in imdb_df["Genre"] for g in row.split(",") if g
-})
+# build filters
+all_genres = sorted({g.strip().capitalize() 
+    for row in imdb_df["Genre"] for g in row.split(",") if g})
 directors = sorted(imdb_df.get("Director", pd.Series()).dropna().unique())
 
-# ---- SIDEBAR ----
-
+# — Sidebar
 with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
     genre_sel    = st.selectbox("Genre", ["Any Genre"] + all_genres)
     year_sel     = st.text_input("Year (leave blank for any)", value="")
@@ -130,110 +134,71 @@ with st.sidebar.expander("🔍 Settings & Filters", expanded=True):
 
     if st.button("Get Recommendations"):
         recs = hybrid_recommendation(
-            imdb_df, sim,
-            genre_sel,
-            year_sel.strip(),
-            director_sel
+            imdb_df, sim, genre_sel, year_sel.strip(), director_sel
         )
-        st.session_state.recs = recs
-        if not recs.empty:
-            st.session_state.feedback = {t: 0 for t in recs.Series_Title}
+        if recs.empty:
+            st.warning("No matches—try different filters.")
+        else:
+            st.session_state.recs     = recs
+            st.session_state.feedback = { t: 0 for t in recs.Series_Title }
+            save_recs(recs)                     # ← persist to disk
             st.session_state.pop("show_prompt", None)
 
     if st.button("Start Over"):
-        for key in ("recs", "feedback", "show_prompt"):
-            st.session_state.pop(key, None)
-        if hasattr(st, "experimental_rerun"):
-            st.experimental_rerun()
-        else:
-            st.stop()
+        for k in ("recs","feedback","show_prompt"):
+            st.session_state.pop(k, None)
+        st.experimental_rerun()
 
-# ---- MAIN AREA ----
-
+# — Main  
 if st.session_state.get("show_prompt"):
     st.markdown(
-        """
-        <style>
-        [data-testid="stAppViewContainer"] {
-            filter: brightness(30%);
-        }
-        </style>
-        """,
+        """<style>[data-testid="stAppViewContainer"]{filter:brightness(30%);}</style>""",
         unsafe_allow_html=True,
     )
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
     if c1.button("🔍 New Search"):
-        for key in ("recs", "feedback", "show_prompt"):
-            st.session_state.pop(key, None)
-        if hasattr(st, "experimental_rerun"):
-            st.experimental_rerun()
-        else:
-            st.stop()
+        for k in ("recs","feedback","show_prompt"): st.session_state.pop(k, None)
+        st.experimental_rerun()
     if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
 
 if "recs" in st.session_state:
     recs = st.session_state.recs
-    if recs.empty:
-        st.warning("No movies match those filters. Please try again.")
-    else:
-        st.subheader("Top 3 Recommendations")
-        cols = st.columns(len(recs))
-
-        rating_labels = [
-            "0 = Not seen yet",
-            "1 = Bad",
-            "2 = Poor",
-            "3 = Fair",
-            "4 = Okay",
-            "5 = Average",
-            "6 = Good",
-            "7 = Very Good",
-            "8 = Great",
-            "9 = Excellent",
-            "10 = Masterpiece",
-        ]
-
-        with st.form("feedback_form"):
-            for i, (_, row) in enumerate(recs.iterrows()):
-                title = row.Series_Title
-                col = cols[i]
-                with col:
-                    st.image(
-                        row.Poster_URL,
-                        caption=title,
-                        use_container_width=False,
-                        width=200
-                    )
-                    st.caption("0 = Not seen yet")
-                    choice = st.selectbox(
-                        "Your rating:",
-                        options=rating_labels,
-                        index=st.session_state.feedback.get(title, 0),
-                        key=f"rating_{i}"
-                    )
-                    score = int(choice.split(" = ")[0])
-                    st.session_state.feedback[title] = score
-
-            submitted = st.form_submit_button("Submit Feedback")
-            if submitted:
-                cnt = st.session_state.search_count
-                for title, score in st.session_state.feedback.items():
-                    if score == 0:
-                        not_watched[title] = cnt
-                    else:
-                        user_fb[title] = (score, cnt + 1)
-                        cd_fb[title]   = cnt + (20 if score >= 7 else 5)
-
-                with open("user_feedback.json", "w", encoding="utf-8") as f:
-                    json.dump(user_fb, f, indent=4)
-                with open("cooldown_feedback.json", "w", encoding="utf-8") as f:
-                    json.dump(cd_fb, f, indent=4)
-                with open("not_watched.json", "w", encoding="utf-8") as f:
-                    json.dump(not_watched, f, indent=4)
-
-                st.session_state.search_count = cnt + 1
-                st.success("Thanks for your feedback! 🎉")
-                st.session_state.show_prompt = True
+    st.subheader("Top 3 Recommendations")
+    cols = st.columns(len(recs))
+    rating_labels = [
+        "0 = Not seen yet","1 = Bad","2 = Poor","3 = Fair","4 = Okay",
+        "5 = Average","6 = Good","7 = Very Good","8 = Great",
+        "9 = Excellent","10 = Masterpiece",
+    ]
+    with st.form("feedback_form"):
+        for i, (_, row) in enumerate(recs.iterrows()):
+            title = row.Series_Title
+            col = cols[i]
+            with col:
+                st.image(row.Poster_URL, caption=title, width=200)
+                choice = st.selectbox(
+                    "Your rating:", rating_labels,
+                    index=st.session_state.feedback.get(title, 0),
+                    key=f"rating_{i}"
+                )
+                st.session_state.feedback[title] = int(choice.split(" = ")[0])
+        if st.form_submit_button("Submit Feedback"):
+            cnt = st.session_state.search_count
+            for title, score in st.session_state.feedback.items():
+                if score == 0:
+                    not_watched[title] = cnt
+                else:
+                    user_fb[title] = (score, cnt+1)
+                    cd_fb[title]   = cnt + (20 if score >= 7 else 5)
+            # write feedback JSONs
+            for obj, fn in [(user_fb,"user_feedback.json"),
+                            (cd_fb,"cooldown_feedback.json"),
+                            (not_watched,"not_watched.json")]:
+                with open(fn, "w", encoding="utf-8") as f:
+                    json.dump(obj, f, indent=4)
+            st.session_state.search_count = cnt+1
+            st.success("Thanks for your feedback! 🎉")
+            st.session_state.show_prompt = True
