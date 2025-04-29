@@ -63,32 +63,24 @@ cd_fb       = load_json(CD_FB_FILE)
 not_watched = load_json(NOT_WATCHED_FILE)
 vect, sim   = build_vect_sim(imdb_df)
 
-# restore last recommendations if any
+# restore last recs if they exist
 if "recs" not in st.session_state:
     prev = load_recs()
     if not prev.empty:
         st.session_state.recs     = prev
-        st.session_state.feedback = {
-            r["Series_Title"]: 0 for _, r in prev.iterrows()
-        }
+        st.session_state.feedback = {r["Series_Title"]: 0 for _, r in prev.iterrows()}
 
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_fb)
 
 # ---- RESET CALLBACK ----
 def reset_all():
-    # clear recommendations + feedback + prompt
-    for k in ("recs", "feedback", "show_prompt"):
-        st.session_state.pop(k, None)
-    # reset filter keys so widgets fall back on defaults
-    for key, default in (
-        ("genre_sel", "Any Genre"),
-        ("year_sel", ""),
-        ("director_sel", "Any Director"),
-    ):
-        st.session_state[key] = default
-    # clear stored recommendations on disk
+    # clear stored recs on disk
     save_recs(pd.DataFrame())
+    # clear entire session state
+    for k in list(st.session_state.keys()):
+        st.session_state.pop(k)
+    # rerun so everything reinitializes
     do_rerun()
 
 # ---- RECOMMENDER ----
@@ -109,14 +101,15 @@ def hybrid_recommendation(df, sim, genre, year, director):
         return pd.DataFrame()
 
     d["Weighted_Score"] = d["IMDB_Rating"]*0.7 + (d["Meta_score"]/10)*0.3
+
     def adjust(r):
         fb = user_fb.get(r["Series_Title"])
         base = r["Weighted_Score"]
         if fb:
             base += (fb[0] - 5)*0.1
         return base
-    d["Weighted_Score"] = d.apply(adjust, axis=1)
 
+    d["Weighted_Score"] = d.apply(adjust, axis=1)
     idxs    = d.index.tolist()
     avg_sim = sim[idxs].mean(axis=0)[idxs]
     d["Similarity_Score"] = avg_sim
@@ -133,38 +126,34 @@ st.title("🎬 Movie Recommender")
 # --- SIDEBAR ---
 with st.sidebar:
     st.markdown("---")
-
-    # Filters inside expander
     with st.expander("🔍 Settings & Filters", expanded=True):
         genres    = sorted({g.strip().capitalize()
-                             for row in imdb_df["Genre"]
-                             for g in row.split(",") if g})
+                            for row in imdb_df["Genre"] for g in row.split(",") if g})
         directors = sorted(imdb_df["Director"].dropna().unique())
 
-        # widget defaults come from session_state if present
-        opts_g  = ["Any Genre"] + genres
-        curr_g  = st.session_state.get("genre_sel", "Any Genre")
+        # defaults if not in session_state
+        curr_g = st.session_state.get("genre_sel", "Any Genre")
+        opts_g = ["Any Genre"] + genres
         genre_sel = st.selectbox(
             "Genre", opts_g,
             index=opts_g.index(curr_g),
             key="genre_sel"
         )
 
-        curr_y  = st.session_state.get("year_sel", "")
+        curr_y = st.session_state.get("year_sel", "")
         year_sel = st.text_input(
             "Year (leave blank)", value=curr_y,
             key="year_sel"
         )
 
-        opts_d  = ["Any Director"] + directors
-        curr_d  = st.session_state.get("director_sel", "Any Director")
+        curr_d = st.session_state.get("director_sel", "Any Director")
+        opts_d = ["Any Director"] + directors
         director_sel = st.selectbox(
             "Director", opts_d,
             index=opts_d.index(curr_d),
             key="director_sel"
         )
 
-        # Get Recommendations
         if st.button("Get Recommendations"):
             recs = hybrid_recommendation(
                 imdb_df, sim, genre_sel, year_sel.strip(), director_sel
@@ -178,7 +167,7 @@ with st.sidebar:
                 st.sidebar.success(f"✅ Saved {len(recs)} recs")
                 st.session_state.pop("show_prompt", None)
 
-        # Start Over
+        # Start Over now calls reset_all()
         st.button("Start Over", on_click=reset_all)
 
 # --- MAIN AREA ---
@@ -197,7 +186,7 @@ if st.session_state.get("show_prompt"):
 if "recs" in st.session_state:
     recs = st.session_state.recs
     st.subheader("Top 3 Recommendations")
-    cols = st.columns(len(recs))
+    cols   = st.columns(len(recs))
     labels = [f"{i} = {t}" for i, t in enumerate([
         "Not seen yet","Bad","Poor","Fair","Okay",
         "Average","Good","Very Good","Great",
