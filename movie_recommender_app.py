@@ -42,7 +42,6 @@ def save_json(obj: dict, path: Path) -> None:
     path.write_text(json.dumps(obj, indent=4), encoding="utf-8")
 
 def save_recs(df: pd.DataFrame) -> None:
-    # overwrites recommendations.json
     RECS_FILE.write_text(df.to_json(orient="records", indent=2),
                          encoding="utf-8")
 
@@ -59,7 +58,7 @@ def build_vectorizer_and_sim(df: pd.DataFrame):
     sim  = cosine_similarity(mat)
     return vect, sim
 
-# ---- LOAD DATA & STATE ----
+# ---- LOAD DATA & INITIALIZE STATE ----
 imdb_df     = load_csv(IMDB_CSV)
 user_fb     = load_json(USER_FB_FILE)
 cd_fb       = load_json(CD_FB_FILE)
@@ -127,7 +126,6 @@ st.title("🎬 Movie Recommender")
 with st.sidebar:
     st.markdown("---")
     with st.expander("🔍 Settings & Filters", expanded=True):
-        # explicit keys so we can reset them
         all_genres = sorted({
             g.strip().capitalize()
             for row in imdb_df["Genre"]
@@ -135,14 +133,23 @@ with st.sidebar:
         })
         directors = sorted(imdb_df["Director"].dropna().unique())
 
-        genre_sel    = st.selectbox(
-            "Genre", ["Any Genre"] + all_genres, index=0, key="genre_sel"
+        # explicit keys and default indices/values
+        genre_sel = st.selectbox(
+            "Genre",
+            ["Any Genre"] + all_genres,
+            index=0,
+            key="genre_sel"
         )
-        year_sel     = st.text_input(
-            "Year (leave blank for any)", value="", key="year_sel"
+        year_sel = st.text_input(
+            "Year (leave blank for any)",
+            value="",
+            key="year_sel"
         )
         director_sel = st.selectbox(
-            "Director", ["Any Director"] + directors, index=0, key="director_sel"
+            "Director",
+            ["Any Director"] + directors,
+            index=0,
+            key="director_sel"
         )
 
         if st.button("Get Recommendations"):
@@ -164,12 +171,19 @@ with st.sidebar:
                 st.session_state.pop("show_prompt", None)
 
         if st.button("Start Over"):
-            # 1) clear UI state
-            for k in ("recs", "feedback", "show_prompt",
-                      "genre_sel", "year_sel", "director_sel"):
-                st.session_state.pop(k, None)
-            # 2) clear the saved recs file
-            save_recs(pd.DataFrame())  
+            # clear recommendations & feedback
+            st.session_state.pop("recs", None)
+            st.session_state.pop("feedback", None)
+            st.session_state.pop("show_prompt", None)
+
+            # reset filters back to defaults
+            st.session_state.genre_sel    = "Any Genre"
+            st.session_state.year_sel     = ""
+            st.session_state.director_sel = "Any Director"
+
+            # clear saved recommendations.json
+            save_recs(pd.DataFrame())
+
             do_rerun()
 
 # ---- MAIN AREA ----
@@ -181,9 +195,12 @@ if st.session_state.get("show_prompt"):
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
     if c1.button("🔍 New Search"):
-        for k in ("recs", "feedback", "show_prompt",
-                  "genre_sel", "year_sel", "director_sel"):
+        # clear recommendations, feedback, filters
+        for k in ("recs", "feedback", "show_prompt"):
             st.session_state.pop(k, None)
+        st.session_state.genre_sel    = "Any Genre"
+        st.session_state.year_sel     = ""
+        st.session_state.director_sel = "Any Director"
         save_recs(pd.DataFrame())
         do_rerun()
     if c2.button("⏹️ Exit"):
