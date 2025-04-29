@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---- DEFINE FILE PATHS ----
+# ---- PATHS ----
 BASE_DIR         = Path(__file__).parent.resolve()
 IMDB_CSV         = BASE_DIR / "imdb_top_1000.csv"
 USER_FB_FILE     = BASE_DIR / "user_feedback.json"
@@ -16,14 +16,13 @@ CD_FB_FILE       = BASE_DIR / "cooldown_feedback.json"
 NOT_WATCHED_FILE = BASE_DIR / "not_watched.json"
 RECS_FILE        = BASE_DIR / "recommendations.json"
 
-# ---- RERUN GUARD ----
+# ---- HELPERS ----
 def do_rerun():
     if hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
     else:
         st.stop()
 
-# ---- I/O HELPERS ----
 @st.cache_data
 def load_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -34,14 +33,13 @@ def load_csv(path: Path) -> pd.DataFrame:
     return df
 
 def load_json(path: Path) -> dict:
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {}
+    return json.loads(path.read_text()) if path.exists() else {}
 
-def save_json(obj: dict, path: Path) -> None:
+def save_json(obj: dict, path: Path):
     path.write_text(json.dumps(obj, indent=4), encoding="utf-8")
 
-def save_recs(df: pd.DataFrame) -> None:
+def save_recs(df: pd.DataFrame):
+    # overwrite recommendations.json
     RECS_FILE.write_text(df.to_json(orient="records", indent=2),
                          encoding="utf-8")
 
@@ -52,32 +50,32 @@ def load_recs() -> pd.DataFrame:
     return pd.DataFrame()
 
 @st.cache_resource
-def build_vectorizer_and_sim(df: pd.DataFrame):
+def build_vect_sim(df: pd.DataFrame):
     vect = TfidfVectorizer(stop_words="english")
     mat  = vect.fit_transform(df["Genre"])
     sim  = cosine_similarity(mat)
     return vect, sim
 
-# ---- LOAD DATA & INITIALIZE STATE ----
+# ---- LOAD ALL DATA & STATE ----
 imdb_df     = load_csv(IMDB_CSV)
 user_fb     = load_json(USER_FB_FILE)
 cd_fb       = load_json(CD_FB_FILE)
 not_watched = load_json(NOT_WATCHED_FILE)
-vect, sim   = build_vectorizer_and_sim(imdb_df)
+vect, sim   = build_vect_sim(imdb_df)
 
+# restore last recs if any
 if "recs" not in st.session_state:
-    saved = load_recs()
-    if not saved.empty:
-        st.session_state.recs     = saved
+    prev = load_recs()
+    if not prev.empty:
+        st.session_state.recs     = prev
         st.session_state.feedback = {
-            row["Series_Title"]: 0
-            for _, row in saved.iterrows()
+            r["Series_Title"]: 0 for _, r in prev.iterrows()
         }
 
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_fb)
 
-# ---- RECOMMENDER FUNCTION ----
+# ---- RECOMMENDER ----
 def hybrid_recommendation(df, sim, genre, year, director):
     d = df.copy()
     if genre != "Any Genre":
@@ -88,21 +86,19 @@ def hybrid_recommendation(df, sim, genre, year, director):
         d = d[d["Director"].str.contains(director, case=False, na=False)]
 
     current = st.session_state.search_count
-    d = d[~d["Series_Title"].isin(not_watched.keys())]
-    d = d[~d["Series_Title"].apply(
-        lambda t: (cd_fb.get(t) or 0) > current
-    )]
+    d = d[~d["Series_Title"].isin(not_watched)]
+    d = d[~d["Series_Title"].apply(lambda t: (cd_fb.get(t) or 0) > current)]
 
     if d.empty:
         return pd.DataFrame()
 
-    d["Weighted_Score"] = d["IMDB_Rating"] * 0.7 + (d["Meta_score"] / 10) * 0.3
+    d["Weighted_Score"] = d["IMDB_Rating"]*0.7 + (d["Meta_score"]/10)*0.3
 
     def adjust(r):
         fb = user_fb.get(r["Series_Title"])
         base = r["Weighted_Score"]
         if fb:
-            base += (fb[0] - 5) * 0.1
+            base += (fb[0] - 5)*0.1
         return base
 
     d["Weighted_Score"] = d.apply(adjust, axis=1)
@@ -112,10 +108,8 @@ def hybrid_recommendation(df, sim, genre, year, director):
     d["Similarity_Score"] = avg_sim
 
     return (
-        d.sort_values(["Weighted_Score", "Similarity_Score"], ascending=False)
-         .head(3)[
-             ["Poster_URL", "Series_Title", "Released_Year", "IMDB_Rating", "Weighted_Score"]
-         ]
+        d.sort_values(["Weighted_Score","Similarity_Score"], ascending=False)
+         .head(3)[["Poster_URL","Series_Title","Released_Year","IMDB_Rating","Weighted_Score"]]
     )
 
 # ---- UI SETUP ----
@@ -125,63 +119,60 @@ st.title("🎬 Movie Recommender")
 # ---- SIDEBAR ----
 with st.sidebar:
     st.markdown("---")
+
     with st.expander("🔍 Settings & Filters", expanded=True):
-        all_genres = sorted({
-            g.strip().capitalize()
-            for row in imdb_df["Genre"]
-            for g in row.split(",") if g
-        })
+        # build options
+        genres    = sorted({g.strip().capitalize()
+                            for row in imdb_df["Genre"]
+                            for g in row.split(",") if g})
         directors = sorted(imdb_df["Director"].dropna().unique())
 
-        # explicit keys and default indices/values
+        # restore or default
+        curr_g = st.session_state.get("genre_sel", "Any Genre")
+        opts_g = ["Any Genre"] + genres
         genre_sel = st.selectbox(
-            "Genre",
-            ["Any Genre"] + all_genres,
-            index=0,
+            "Genre", opts_g,
+            index=opts_g.index(curr_g),
             key="genre_sel"
         )
+
+        curr_y = st.session_state.get("year_sel", "")
         year_sel = st.text_input(
-            "Year (leave blank for any)",
-            value="",
-            key="year_sel"
+            "Year (leave blank)", value=curr_y, key="year_sel"
         )
+
+        curr_d = st.session_state.get("director_sel", "Any Director")
+        opts_d = ["Any Director"] + directors
         director_sel = st.selectbox(
-            "Director",
-            ["Any Director"] + directors,
-            index=0,
+            "Director", opts_d,
+            index=opts_d.index(curr_d),
             key="director_sel"
         )
 
         if st.button("Get Recommendations"):
             recs = hybrid_recommendation(
-                imdb_df, sim,
-                genre_sel,
-                year_sel.strip(),
-                director_sel
+                imdb_df, sim, genre_sel, year_sel.strip(), director_sel
             )
             if recs.empty:
                 st.warning("No matches—try different filters.")
             else:
                 st.session_state.recs     = recs
-                st.session_state.feedback = {
-                    t: 0 for t in recs.Series_Title
-                }
+                st.session_state.feedback = {t: 0 for t in recs.Series_Title}
                 save_recs(recs)
                 st.sidebar.success(f"✅ Saved {len(recs)} recs")
                 st.session_state.pop("show_prompt", None)
 
         if st.button("Start Over"):
-            # clear recommendations & feedback
-            st.session_state.pop("recs", None)
-            st.session_state.pop("feedback", None)
-            st.session_state.pop("show_prompt", None)
+            # clear recs & feedback
+            for k in ("recs","feedback","show_prompt"):
+                st.session_state.pop(k, None)
 
-            # reset filters back to defaults
-            st.session_state.genre_sel    = "Any Genre"
-            st.session_state.year_sel     = ""
-            st.session_state.director_sel = "Any Director"
+            # reset filters in state
+            st.session_state["genre_sel"]    = "Any Genre"
+            st.session_state["year_sel"]     = ""
+            st.session_state["director_sel"] = "Any Director"
 
-            # clear saved recommendations.json
+            # clear saved recs file
             save_recs(pd.DataFrame())
 
             do_rerun()
@@ -190,19 +181,21 @@ with st.sidebar:
 if st.session_state.get("show_prompt"):
     st.markdown(
         """<style>[data-testid="stAppViewContainer"]{filter:brightness(30%);}</style>""",
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
+
     if c1.button("🔍 New Search"):
-        # clear recommendations, feedback, filters
-        for k in ("recs", "feedback", "show_prompt"):
+        # clear state + filters
+        for k in ("recs","feedback","show_prompt"):
             st.session_state.pop(k, None)
-        st.session_state.genre_sel    = "Any Genre"
-        st.session_state.year_sel     = ""
-        st.session_state.director_sel = "Any Director"
+        st.session_state["genre_sel"]    = "Any Genre"
+        st.session_state["year_sel"]     = ""
+        st.session_state["director_sel"] = "Any Director"
         save_recs(pd.DataFrame())
         do_rerun()
+
     if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
@@ -211,11 +204,11 @@ if "recs" in st.session_state:
     recs = st.session_state.recs
     st.subheader("Top 3 Recommendations")
     cols = st.columns(len(recs))
-    labels = [
-        "0 = Not seen yet", "1 = Bad", "2 = Poor", "3 = Fair", "4 = Okay",
-        "5 = Average", "6 = Good", "7 = Very Good", "8 = Great",
-        "9 = Excellent", "10 = Masterpiece",
-    ]
+    labels = [f"{i} = {t}" for i, t in enumerate([
+        "Not seen yet","Bad","Poor","Fair","Okay",
+        "Average","Good","Very Good","Great",
+        "Excellent","Masterpiece"
+    ])]
 
     with st.form("feedback_form"):
         for i, (_, row) in enumerate(recs.iterrows()):
@@ -236,8 +229,8 @@ if "recs" in st.session_state:
                 if score == 0:
                     not_watched[title] = cnt
                 else:
-                    user_fb[title]   = (score, cnt + 1)
-                    cd_fb[title]     = cnt + (20 if score >= 7 else 5)
+                    user_fb[title] = (score, cnt+1)
+                    cd_fb[title]   = cnt + (20 if score >= 7 else 5)
 
             save_json(user_fb,     USER_FB_FILE)
             save_json(cd_fb,       CD_FB_FILE)
