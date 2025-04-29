@@ -1,7 +1,6 @@
 # movie_recommender_app.py
 
 import json
-import os
 from pathlib import Path
 
 import streamlit as st
@@ -17,7 +16,7 @@ CD_FB_FILE       = BASE_DIR / "cooldown_feedback.json"
 NOT_WATCHED_FILE = BASE_DIR / "not_watched.json"
 RECS_FILE        = BASE_DIR / "recommendations.json"
 
-# ---- RERUN GUARD FUNCTION ----
+# ---- RERUN GUARD ----
 def do_rerun():
     if hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
@@ -43,6 +42,7 @@ def save_json(obj: dict, path: Path) -> None:
     path.write_text(json.dumps(obj, indent=4), encoding="utf-8")
 
 def save_recs(df: pd.DataFrame) -> None:
+    # overwrites recommendations.json
     RECS_FILE.write_text(df.to_json(orient="records", indent=2),
                          encoding="utf-8")
 
@@ -59,7 +59,7 @@ def build_vectorizer_and_sim(df: pd.DataFrame):
     sim  = cosine_similarity(mat)
     return vect, sim
 
-# ---- LOAD DATA & INITIALIZE STATE ----
+# ---- LOAD DATA & STATE ----
 imdb_df     = load_csv(IMDB_CSV)
 user_fb     = load_json(USER_FB_FILE)
 cd_fb       = load_json(CD_FB_FILE)
@@ -78,7 +78,7 @@ if "recs" not in st.session_state:
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_fb)
 
-# ---- RECOMMENDER LOGIC ----
+# ---- RECOMMENDER FUNCTION ----
 def hybrid_recommendation(df, sim, genre, year, director):
     d = df.copy()
     if genre != "Any Genre":
@@ -125,20 +125,9 @@ st.title("🎬 Movie Recommender")
 
 # ---- SIDEBAR ----
 with st.sidebar:
-    # Debug panel to inspect file system and JSON contents
-    if st.checkbox("🕵️ Debug FS"):
-        cwd = Path().resolve()
-        st.write("**Working dir:**", cwd)
-        st.write("**Files here:**", os.listdir(cwd))
-        for p in (USER_FB_FILE, CD_FB_FILE, NOT_WATCHED_FILE, RECS_FILE):
-            if p.exists():
-                st.write(f"── Contents of `{p.name}`:")
-                st.json(json.loads(p.read_text(encoding="utf-8")))
-            else:
-                st.warning(f"`{p.name}` not found")
-
     st.markdown("---")
     with st.expander("🔍 Settings & Filters", expanded=True):
+        # explicit keys so we can reset them
         all_genres = sorted({
             g.strip().capitalize()
             for row in imdb_df["Genre"]
@@ -146,9 +135,15 @@ with st.sidebar:
         })
         directors = sorted(imdb_df["Director"].dropna().unique())
 
-        genre_sel    = st.selectbox("Genre", ["Any Genre"] + all_genres)
-        year_sel     = st.text_input("Year (leave blank for any)", "")
-        director_sel = st.selectbox("Director", ["Any Director"] + directors)
+        genre_sel    = st.selectbox(
+            "Genre", ["Any Genre"] + all_genres, index=0, key="genre_sel"
+        )
+        year_sel     = st.text_input(
+            "Year (leave blank for any)", value="", key="year_sel"
+        )
+        director_sel = st.selectbox(
+            "Director", ["Any Director"] + directors, index=0, key="director_sel"
+        )
 
         if st.button("Get Recommendations"):
             recs = hybrid_recommendation(
@@ -165,12 +160,16 @@ with st.sidebar:
                     t: 0 for t in recs.Series_Title
                 }
                 save_recs(recs)
-                st.sidebar.success(f"✅ Saved {len(recs)} recs to {RECS_FILE.name}")
+                st.sidebar.success(f"✅ Saved {len(recs)} recs")
                 st.session_state.pop("show_prompt", None)
 
         if st.button("Start Over"):
-            for k in ("recs", "feedback", "show_prompt"):
+            # 1) clear UI state
+            for k in ("recs", "feedback", "show_prompt",
+                      "genre_sel", "year_sel", "director_sel"):
                 st.session_state.pop(k, None)
+            # 2) clear the saved recs file
+            save_recs(pd.DataFrame())  
             do_rerun()
 
 # ---- MAIN AREA ----
@@ -182,8 +181,10 @@ if st.session_state.get("show_prompt"):
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
     if c1.button("🔍 New Search"):
-        for k in ("recs", "feedback", "show_prompt"):
+        for k in ("recs", "feedback", "show_prompt",
+                  "genre_sel", "year_sel", "director_sel"):
             st.session_state.pop(k, None)
+        save_recs(pd.DataFrame())
         do_rerun()
     if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
@@ -222,14 +223,8 @@ if "recs" in st.session_state:
                     cd_fb[title]     = cnt + (20 if score >= 7 else 5)
 
             save_json(user_fb,     USER_FB_FILE)
-            st.sidebar.success(f"✅ Wrote {len(user_fb)} to {USER_FB_FILE.name}")
             save_json(cd_fb,       CD_FB_FILE)
-            st.sidebar.success(f"✅ Wrote {len(cd_fb)} to {CD_FB_FILE.name}")
             save_json(not_watched, NOT_WATCHED_FILE)
-            st.sidebar.success(f"✅ Wrote {len(not_watched)} to {NOT_WATCHED_FILE.name}")
-
-            save_recs(recs)
-            st.sidebar.success(f"✅ Saved {len(recs)} recs to {RECS_FILE.name}")
 
             st.session_state.search_count += 1
             st.success("Thanks for your feedback! 🎉")
