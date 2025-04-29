@@ -33,20 +33,20 @@ def load_csv(path: Path) -> pd.DataFrame:
     return df
 
 def load_json(path: Path) -> dict:
-    return json.loads(path.read_text()) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 def save_json(obj: dict, path: Path):
     path.write_text(json.dumps(obj, indent=4), encoding="utf-8")
 
 def save_recs(df: pd.DataFrame):
-    # overwrite recommendations.json
     RECS_FILE.write_text(df.to_json(orient="records", indent=2),
                          encoding="utf-8")
 
 def load_recs() -> pd.DataFrame:
     if RECS_FILE.exists():
-        data = json.loads(RECS_FILE.read_text(encoding="utf-8"))
-        return pd.DataFrame.from_records(data)
+        return pd.DataFrame.from_records(
+            json.loads(RECS_FILE.read_text(encoding="utf-8"))
+        )
     return pd.DataFrame()
 
 @st.cache_resource
@@ -56,14 +56,14 @@ def build_vect_sim(df: pd.DataFrame):
     sim  = cosine_similarity(mat)
     return vect, sim
 
-# ---- LOAD ALL DATA & STATE ----
+# ---- LOAD & INIT STATE ----
 imdb_df     = load_csv(IMDB_CSV)
 user_fb     = load_json(USER_FB_FILE)
 cd_fb       = load_json(CD_FB_FILE)
 not_watched = load_json(NOT_WATCHED_FILE)
 vect, sim   = build_vect_sim(imdb_df)
 
-# restore last recs if any
+# restore last recommendations if any
 if "recs" not in st.session_state:
     prev = load_recs()
     if not prev.empty:
@@ -74,6 +74,22 @@ if "recs" not in st.session_state:
 
 if "search_count" not in st.session_state:
     st.session_state.search_count = len(user_fb)
+
+# ---- RESET CALLBACK ----
+def reset_all():
+    # clear recommendations + feedback + prompt
+    for k in ("recs", "feedback", "show_prompt"):
+        st.session_state.pop(k, None)
+    # reset filter keys so widgets fall back on defaults
+    for key, default in (
+        ("genre_sel", "Any Genre"),
+        ("year_sel", ""),
+        ("director_sel", "Any Director"),
+    ):
+        st.session_state[key] = default
+    # clear stored recommendations on disk
+    save_recs(pd.DataFrame())
+    do_rerun()
 
 # ---- RECOMMENDER ----
 def hybrid_recommendation(df, sim, genre, year, director):
@@ -93,14 +109,12 @@ def hybrid_recommendation(df, sim, genre, year, director):
         return pd.DataFrame()
 
     d["Weighted_Score"] = d["IMDB_Rating"]*0.7 + (d["Meta_score"]/10)*0.3
-
     def adjust(r):
         fb = user_fb.get(r["Series_Title"])
         base = r["Weighted_Score"]
         if fb:
             base += (fb[0] - 5)*0.1
         return base
-
     d["Weighted_Score"] = d.apply(adjust, axis=1)
 
     idxs    = d.index.tolist()
@@ -112,43 +126,45 @@ def hybrid_recommendation(df, sim, genre, year, director):
          .head(3)[["Poster_URL","Series_Title","Released_Year","IMDB_Rating","Weighted_Score"]]
     )
 
-# ---- UI SETUP ----
+# ---- UI ----
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 st.title("🎬 Movie Recommender")
 
-# ---- SIDEBAR ----
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown("---")
 
+    # Filters inside expander
     with st.expander("🔍 Settings & Filters", expanded=True):
-        # build options
         genres    = sorted({g.strip().capitalize()
-                            for row in imdb_df["Genre"]
-                            for g in row.split(",") if g})
+                             for row in imdb_df["Genre"]
+                             for g in row.split(",") if g})
         directors = sorted(imdb_df["Director"].dropna().unique())
 
-        # restore or default
-        curr_g = st.session_state.get("genre_sel", "Any Genre")
-        opts_g = ["Any Genre"] + genres
+        # widget defaults come from session_state if present
+        opts_g  = ["Any Genre"] + genres
+        curr_g  = st.session_state.get("genre_sel", "Any Genre")
         genre_sel = st.selectbox(
             "Genre", opts_g,
             index=opts_g.index(curr_g),
             key="genre_sel"
         )
 
-        curr_y = st.session_state.get("year_sel", "")
+        curr_y  = st.session_state.get("year_sel", "")
         year_sel = st.text_input(
-            "Year (leave blank)", value=curr_y, key="year_sel"
+            "Year (leave blank)", value=curr_y,
+            key="year_sel"
         )
 
-        curr_d = st.session_state.get("director_sel", "Any Director")
-        opts_d = ["Any Director"] + directors
+        opts_d  = ["Any Director"] + directors
+        curr_d  = st.session_state.get("director_sel", "Any Director")
         director_sel = st.selectbox(
             "Director", opts_d,
             index=opts_d.index(curr_d),
             key="director_sel"
         )
 
+        # Get Recommendations
         if st.button("Get Recommendations"):
             recs = hybrid_recommendation(
                 imdb_df, sim, genre_sel, year_sel.strip(), director_sel
@@ -162,22 +178,10 @@ with st.sidebar:
                 st.sidebar.success(f"✅ Saved {len(recs)} recs")
                 st.session_state.pop("show_prompt", None)
 
-        if st.button("Start Over"):
-            # clear recs & feedback
-            for k in ("recs","feedback","show_prompt"):
-                st.session_state.pop(k, None)
+        # Start Over
+        st.button("Start Over", on_click=reset_all)
 
-            # reset filters in state
-            st.session_state["genre_sel"]    = "Any Genre"
-            st.session_state["year_sel"]     = ""
-            st.session_state["director_sel"] = "Any Director"
-
-            # clear saved recs file
-            save_recs(pd.DataFrame())
-
-            do_rerun()
-
-# ---- MAIN AREA ----
+# --- MAIN AREA ---
 if st.session_state.get("show_prompt"):
     st.markdown(
         """<style>[data-testid="stAppViewContainer"]{filter:brightness(30%);}</style>""",
@@ -185,17 +189,7 @@ if st.session_state.get("show_prompt"):
     )
     st.write("## Would you like to search again?")
     c1, c2 = st.columns(2)
-
-    if c1.button("🔍 New Search"):
-        # clear state + filters
-        for k in ("recs","feedback","show_prompt"):
-            st.session_state.pop(k, None)
-        st.session_state["genre_sel"]    = "Any Genre"
-        st.session_state["year_sel"]     = ""
-        st.session_state["director_sel"] = "Any Director"
-        save_recs(pd.DataFrame())
-        do_rerun()
-
+    c1.button("🔍 New Search", on_click=reset_all)
     if c2.button("⏹️ Exit"):
         st.write("Enjoy your movies! 🍿")
     st.stop()
